@@ -6,9 +6,23 @@ setwd("C:/Users/user/Documents/GitHub/comp_stats_machine_learning_iv")
 rm(list=ls())
 
 # Load libraries
-if (!require("haven")) {install.packages("haven")}
+if(!require(haven)) {install.packages("haven")}
+if(!require(MASS)) {install.packages("MASS")}
+if(!require(ivreg)) install.packages("ivreg")
+if(!require(randomForest)) install.packages("randomForest")
+if(!require(gbm)) install.packages("gbm")
+library(randomForest)
+library(ivreg)
+library(ivprobit)
+library(MASS)
+library(mvtnorm)
 library(haven)
+library(gbm)
+library(caret)
+install.packages("newboost", repos="http://R-Forge.R-project.org")
+library(newboost)
 set.seed(12345)
+
 
 #=========================================================
 # a. Generate the simulation of the data set
@@ -18,25 +32,81 @@ local_level_dta <- read_dta('localvariables.dta')
 basic_level_dta <- read_dta('basicvariables.dta')
 
 # parameters for simulations
-obs <- 1000
-p <- 5
-mean_mu <- c(0.0)
-sigma_mu <- matrix(c(1,0.6,0.6,1),2)
-obs_local <- obs/10
+n_simulation <- 100
+n_observations <- 1000
+n_exogeneous_variables <- 5 # number of exogenous variables
+mean_eps <- c(0,0)
+sigma_eps <- matrix(c(1,0.6,0.6,1),2)
+#obs_local <- obs/10
 
 # DGP function 
-dgp <- function(individual_obs,local_obs,individual_data,local_data,continuous_iv=FALSE,weak=FALSE,long=FALSE){
-        if (continuous_iv== TRUE) {
-                X <- matrix(rnorm(obs*p,0,1),obs,p)
-                u <- mvrnorm(obs,mean_mu,sigma_mu)
-                X.mod = as.matrix(cbind(rep(1,num.obs.students),W,X))
-                Y <- X.mod %*% ols.beta.original + eps
+#dgp <- function(individual_obs,local_obs,individual_data,local_data,continuous_iv=FALSE,weak=FALSE,long=FALSE){
+#        if (continuous_iv== TRUE) {
+                #x.2 <- matrix(rnorm(obs*n_exo,0,1),obs,n_exo)
+dgp <- function(obs,mean_mu,sigma_mu){
+                x.2 = rnorm(obs,0,1)
+                u = mvrnorm(obs*2,mean_mu,sigma_mu)
+                #z <- matrix(rnorm(obs*n_inst,0,1),obs,n_inst)
+                z = rnorm(obs,0,1)
+                #x.1 = (0.1 + 1.5*z - 0.8*x.2 + u[,2]  0)*1
+                x.1 = 0.1 + 1.5*z - 0.8*x.2 + u[,2] 
+                y = 0.1 + 1*x.1 - 0.5*x.2 + u[,1]
+                data <- data.frame("y"=y, "x.1"=x.1,"x.2"=x.2,"z"=z)
+                return(data)
         }
-        else{
-                X.mod = as.matrix(cbind(rep(1,num.obs.students),W,X))
-                Y <- X.mod %*% ols.beta.original +X$X1.sim*W + X$X2.sim*W + eps
-        }       
-        
+
+dgp_v2 <- function(obs,mean_mu,sigma_mu){
+        err_c=rnorm(obs, 0, 1)
+        theta=runif(obs, -1, 1)
+        x.2 = 1+err_c 
+        x.3 = rnorm(obs,0,1)
+        u = mvrnorm(obs*2,mean_mu,sigma_mu)
+        #z <- matrix(rnorm(obs*n_inst,0,1),obs,n_inst)
+        z = rnorm(obs,0,1)
+        x.1 = (0.1 + 1.5*z - 0.8*x.3 + err_c > 0.8)*1
+        y = 0.1 + 1*x.1 +1*x.2 - 0.5*x.3 + theta
+        data <- data.frame("y"=y, "x.1"=x.1,"x.2"=x.2,"z"=z)
+        return(data)
+}
+
+train_data <- dgp(obs,mean_mu,sigma_mu)
+test_data <- dgp(obs,mean_mu,sigma_mu)
+
+naive_ols <- lm(y ~ x.1 + x.2,data=train_data)
+train_MSE_OLS = mean(naive_ols$residuals^2)
+
+test_mse<- function(test_data, model){
+        value <- mean((test_data$y - predict(model))^2)
+        return(value)
+}
+
+test_MSE_OLS = test_mse(test_data,lm(y ~ x.1 + x.2,data=test_data))
+
+iv <- ivreg(y ~ x.1 + x.2| z + x.2,data=train_data)
+summary(iv)
+train_mse_iv = mean(iv$residuals^2)
+test_mse_iv <- test_mse(test_data, ivreg(y ~ x.1 + x.2| z + x.2,data=test_data))
+
+trees <- 100
+rf <- randomForest(x.1 ~ z, importance=TRUE, data=train_data, ntree=trees)
+x_hat <- predict(rf)
+x_hat_test <- predict(rf, newdata=test_data)
+
+train_mse_rf <- mean(rf$mse) 
+test_mse_rf <- mean((x_hat_test - test_data$x.1)^2)
+
+boost <- gbm(x.1 ~ z, data=train_data, distribution = "gaussian", 
+             n.trees = trees, interaction.depth = 4)
+x_hat_train <- predict(boost, n.trees = trees)
+xhat_boost_test<-predict(boost, newdata= test_data, n.trees = trees)
+
+train_mse_b <- mean(boost$train.error)
+test_mse_b <- mean((xhat_boost_test - test_data$x.1)^2) 
+teb <- L2BoostEffect(x=xs, y=ys, d=ds, post=FALSE)
+tebp <- L2BoostEffect(x=xs, y=ys, d=ds)
+tebo <- orthoL2BoostEffect(x=xs, y=ys, d=ds)
+
+
         
         
         # Simple setting
